@@ -15,8 +15,18 @@
 // Raiz da hierarquia
 Node *root;
 
-// Total de frames
-int totalFrames;
+#define MAX_FRAMES 2000
+#define MAX_CHANNELS 2000
+
+float data[MAX_FRAMES][MAX_CHANNELS];
+int totalFrames = 0;
+int totalChannels = 0; 
+int frameCount = 0;
+int frameDataSize = 0;
+float *motionData = 0;
+
+#define MAX_LINE_LENGTH 256
+#define MAX_NAME_LENGTH 128
 
 // Frame atual
 int curFrame = 0;
@@ -24,6 +34,7 @@ int curFrame = 0;
 // Funcoes para liberacao de memoria da hierarquia
 void freeTree();
 void freeNode(Node *node);
+void parseMotion(FILE *file);
 
 // Funcao externa para inicializacao da OpenGL
 void init();
@@ -46,6 +57,11 @@ void apply();
 //  - numChannels: quantidade de canais de transformacao (3 ou 6)
 //  - ofx, ofy, ofz: offset (deslocamento) lido do arquivo
 // **********************************************************************
+
+//
+// DADOS DE EXEMPLO DO PRIMEIRO FRAME
+//
+
 Node *createNode(char *name, Node *parent, int numChannels, float ofx,
                  float ofy, float ofz) {
   Node *aux = malloc(sizeof(Node));
@@ -77,21 +93,222 @@ Node *createNode(char *name, Node *parent, int numChannels, float ofx,
   return aux;
 }
 
-//
-// DADOS DE EXEMPLO DO PRIMEIRO FRAME
-//
+void trimString(char *str) {
+    if (!str) return;
+    
+    // Remove espaços do início
+    char *start = str;
+    while (*start && (*start == ' ' || *start == '\t')) {
+        start++;
+    }
+    if (start != str) {
+        memmove(str, start, strlen(start) + 1);
+    }
+    
+    // Remove espaços e quebras de linha do final
+    char *end = str + strlen(str) - 1;
+    while (end > str && (*end == ' ' || *end == '\n' || *end == '\r' || *end == '\t')) {
+        *end = '\0';
+        end--;
+    }
+}
 
-float data[] = {
-    -326.552, 98.7701,   317.634,  71.4085,   60.8487,  17.2406,  -70.1915,
-    0,        88.8779,   84.6529,  68.0632,   -5.27801, 0.719492, 15.2067,
-    13.3733,  -135.039,  24.774,   172.053,   -171.896, 64.9682,  -165.105,
-    3.6548,   1.03593,   -36.4128, -55.7886,  37.8019,  -120.338, 9.39682,
-    14.0503,  -27.1815,  4.41274,  -0.125185, -1.52942, 1.33299,  -4.20935,
-    46.1022,  -92.5385,  -35.676,  63.2656,   -5.23096, -15.2195, 9.30354,
-    11.1114,  -0.982512, -11.0421, -86.4319,  -3.01435, 76.3394,  1.71268,
-    24.9011,  -2.42099,  9.483,    17.5267,   -1.42749, -37.0021, -44.3019,
-    -39.1702, -46.2538,  -2.58689, 78.4703,   1.9216,   29.8211,  -1.99744,
-    -3.70506, 1.06523,   0.577189, 0.146783,  3.70013,  2.9702};
+void parseHierarchy(FILE *file) {
+    if (!file) {
+        printf("Erro: arquivo inválido\n");
+        return;
+    }
+
+    char line[MAX_LINE_LENGTH];
+    char name[MAX_NAME_LENGTH];
+    Node *currentNode = NULL;
+    int lineNumber = 0;
+    
+    while (fgets(line, sizeof(line), file)) {
+        lineNumber++;
+        trimString(line);  // Limpa a linha inteira antes de processá-la
+        
+        if (strlen(line) == 0) {
+            continue;  // Pula linhas vazias após o trim
+        }
+        
+        printf("\nProcessando linha %d: '%s'\n", lineNumber, line);
+        
+        if (strncmp(line, "ROOT", 4) == 0) {
+            char *nameStart = line + 4;  // Pula "ROOT"
+            trimString(nameStart);       // Limpa espaços extras antes do nome
+            if (sscanf(nameStart, "%s", name) == 1) {
+                root = createNode(name, NULL, 0, 0, 0, 0);
+                currentNode = root;
+                printf("ROOT criado: %s\n", name);
+            }
+        }
+        else if (strncmp(line, "JOINT", 5) == 0) {
+            char *nameStart = line + 5;  // Pula "JOINT"
+            trimString(nameStart);       // Limpa espaços extras antes do nome
+            if (sscanf(nameStart, "%s", name) == 1) {
+                Node *newNode = createNode(name, currentNode, 0, 0, 0, 0);
+                currentNode = newNode;
+                printf("JOINT criado: %s (pai: %s)\n", name, 
+                       currentNode->parent ? currentNode->parent->name : "NULL");
+            }
+        }
+        else if (strncmp(line, "OFFSET", 6) == 0) {
+            char *offsetValues = line + 6;  // Pula "OFFSET"
+            trimString(offsetValues);       // Limpa espaços extras antes dos valores
+            float x, y, z;
+            if (currentNode && sscanf(offsetValues, "%f %f %f", &x, &y, &z) == 3) {
+                currentNode->offset[0] = x;
+                currentNode->offset[1] = y;
+                currentNode->offset[2] = z;
+                printf("OFFSET definido para %s: %.2f %.2f %.2f\n", 
+                       currentNode->name, x, y, z);
+            }
+        }
+        else if (strncmp(line, "CHANNELS", 8) == 0) {
+            char *channelInfo = line + 8;  // Pula "CHANNELS"
+            trimString(channelInfo);       // Limpa espaços extras antes do número
+            if (currentNode) {
+                int numChannels;
+                if (sscanf(channelInfo, "%d", &numChannels) == 1) {
+                    currentNode->channels = numChannels;
+                    currentNode->channelData = calloc(numChannels, sizeof(float));
+                    if (currentNode->channelData) {
+                        totalChannels += numChannels;
+                        printf("CHANNELS configurado para %s: %d\n", 
+                               currentNode->name, numChannels);
+                    }
+                }
+            }
+        }
+        else if (strncmp(line, "End Site", 8) == 0) {
+            if (currentNode) {
+                printf("Processando End Site para nó %s\n", currentNode->name);
+                // Lê a próxima linha que deve ser "{"
+                if (fgets(line, sizeof(line), file)) {
+                    trimString(line);
+                    if (line[0] == '{') {
+                        // Lê a linha do OFFSET
+                        if (fgets(line, sizeof(line), file)) {
+                            trimString(line);
+                            float x, y, z;
+                            if (sscanf(line, "OFFSET %f %f %f", &x, &y, &z) == 3) {
+                                createNode("End Site", currentNode, 0, x, y, z);
+                            }
+                        }
+                        // Lê o "}" final
+                        fgets(line, sizeof(line), file);
+                        trimString(line);
+                    }
+                }
+            }
+        }
+        else if (strcmp(line, "}") == 0) {
+            if (currentNode && currentNode->parent) {
+                printf("Voltando do nó %s para o pai %s\n", 
+                       currentNode->name, 
+                       currentNode->parent->name);
+                currentNode = currentNode->parent;
+            }
+        }
+        else if (strcmp(line, "{") == 0) {
+            printf("Início de bloco encontrado\n");
+        }
+        else if (strncmp(line, "MOTION", 6) == 0) {
+            printf("MOTION encontrado - iniciando parsing dos frames\n");
+            parseMotion(file);
+        }
+        else {
+            printf("Aviso: linha não reconhecida: '%s'\n", line);
+        }
+    }
+    
+    printf("\nParsing da hierarquia concluído. Total de linhas processadas: %d\n", lineNumber);
+}
+
+void parseMotion(FILE *file) {
+    char line[1024]; // Buffer para leitura de linhas
+
+    // Lê a linha com "Frames: X"
+    if (fgets(line, sizeof(line), file)) {
+        trimString(line);
+        if (strncmp(line, "Frames:", 7) == 0) {
+            sscanf(line, "Frames: %d", &totalFrames);
+            printf("Total de frames: %d\n", totalFrames);
+        } else {
+            printf("Erro: Formato inesperado. Esperado 'Frames:'.\n");
+            return;
+        }
+    }
+
+    // Lê e ignora a linha "Frame Time: X"
+    if (fgets(line, sizeof(line), file)) {
+        trimString(line);
+        if (strncmp(line, "Frame Time:", 11) != 0) {
+            printf("Erro: Formato inesperado. Esperado 'Frame Time:'.\n");
+            return;
+        }
+        printf("Frame Time ignorado: %s\n", line);
+    }
+
+    // Verifica limites
+    if (totalFrames > MAX_FRAMES) {
+        printf("Erro: Número de frames excede o limite máximo de %d.\n", MAX_FRAMES);
+        exit(1);
+    }
+
+    // Lê os dados de movimento
+    int currentFrame = 0;
+    while (fgets(line, sizeof(line), file)) {
+        trimString(line);
+
+        // Divide a linha em tokens (valores de movimento)
+        char *token = strtok(line, " ");
+        int channelIndex = 0;
+
+        while (token != NULL) {
+            if (currentFrame >= totalFrames || channelIndex >= MAX_CHANNELS) {
+                printf("Erro: Dados excedem os limites da matriz (%dx%d).\n", MAX_FRAMES, MAX_CHANNELS);
+                exit(1);
+            }
+
+            // Converte o valor para float e armazena na matriz
+            data[currentFrame][channelIndex] = atof(token);
+            channelIndex++;
+            token = strtok(NULL, " ");
+        }
+
+        // Atualiza o número total de canais baseado na primeira linha lida
+        if (currentFrame == 0) {
+            totalChannels = channelIndex;
+            printf("Total de canais: %d\n", totalChannels);
+
+            // Verifica limite de canais
+            if (totalChannels > MAX_CHANNELS) {
+                printf("Erro: Número de canais excede o limite máximo de %d.\n", MAX_CHANNELS);
+                exit(1);
+            }
+        }
+
+        currentFrame++;
+    }
+
+    printf("Dados de movimento carregados com sucesso.\n");
+    printf("Frames lidos: %d, Canais: %d\n", totalFrames, totalChannels);
+}
+
+void printHierarchy(Node *node, int depth) {
+    if (!node) return;
+
+    for (int i = 0; i < depth; i++) printf("  "); // Indentação
+    printf("%s (Canais: %d, Filhos: %d)\n", node->name, node->channels, node->numChildren);
+
+    Node *child = node->children;
+    while (child) {
+        printHierarchy(child, depth + 1);
+        child = child->next;
+    }
+}
 
 // Pos. da aplicacao dos dados
 int dataPos;
@@ -113,7 +330,7 @@ void applyData(float data[], Node *n) {
 
 void apply() {
   dataPos = 0;
-  applyData(data, root);
+  applyData(data[curFrame], root);
 }
 
 void initMaleSkel() {
@@ -188,6 +405,8 @@ void freeNode(Node *node) {
 //  Programa principal
 // **********************************************************************
 int main(int argc, char **argv) {
+
+  FILE *file = fopen(argv[1], "r");
   glutInit(&argc, argv);
   glutInitDisplayMode(GLUT_DOUBLE | GLUT_DEPTH | GLUT_RGB);
   glutInitWindowPosition(0, 0);
@@ -204,7 +423,16 @@ int main(int argc, char **argv) {
 
   // Exemplo: monta manualmente um esqueleto
   // (no trabalho, deve-se ler do arquivo)
-  initMaleSkel();
+  parseHierarchy(file);
+  printHierarchy(root, 0);
+
+    // Use o motionData conforme necessário
+    // Exemplo: imprimir o primeiro frame
+    for (int i = 0; i < frameDataSize; i++) {
+        printf("Canal %d: %.2f\n", i, motionData[i]);
+    }
+  apply();
+
 
   // Define que o tratador de evento para
   // o redesenho da tela. A funcao "display"

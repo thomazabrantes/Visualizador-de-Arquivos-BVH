@@ -15,10 +15,7 @@
 // Raiz da hierarquia
 Node *root;
 
-#define MAX_FRAMES 2000
-#define MAX_CHANNELS 2000
-
-float data[MAX_FRAMES][MAX_CHANNELS];
+float **data = NULL;
 int totalFrames = 0;
 int totalChannels = 0; 
 int frameCount = 0;
@@ -251,14 +248,21 @@ void parseMotion(FILE *file) {
         printf("Frame Time ignorado: %s\n", line);
     }
 
-    // Verifica limites
-    if (totalFrames > MAX_FRAMES) {
-        printf("Erro: Número de frames excede o limite máximo de %d.\n", MAX_FRAMES);
+    // Aloca memória para a matriz de dados
+    data = (float **)malloc(totalFrames * sizeof(float *));
+    if (!data) {
+        printf("Erro: Falha ao alocar memória para as linhas da matriz.\n");
         exit(1);
     }
 
-    // Lê os dados de movimento
+    for (int i = 0; i < totalFrames; i++) {
+        data[i] = NULL; // Inicializa os ponteiros
+    }
+
+    // Variáveis de controle
     int currentFrame = 0;
+
+    // Lê os dados de movimento
     while (fgets(line, sizeof(line), file)) {
         trimString(line);
 
@@ -266,35 +270,60 @@ void parseMotion(FILE *file) {
         char *token = strtok(line, " ");
         int channelIndex = 0;
 
-        while (token != NULL) {
-            if (currentFrame >= totalFrames || channelIndex >= MAX_CHANNELS) {
-                printf("Erro: Dados excedem os limites da matriz (%dx%d).\n", MAX_FRAMES, MAX_CHANNELS);
-                exit(1);
+        if (currentFrame == 0) {
+            // Conta o número de canais apenas na primeira linha
+            while (token != NULL) {
+                channelIndex++;
+                token = strtok(NULL, " ");
             }
+            totalChannels = channelIndex;
 
-            // Converte o valor para float e armazena na matriz
-            data[currentFrame][channelIndex] = atof(token);
-            channelIndex++;
+            // Aloca memória para as colunas
+            for (int i = 0; i < totalFrames; i++) {
+                data[i] = (float *)malloc(totalChannels * sizeof(float));
+                if (!data[i]) {
+                    printf("Erro: Falha ao alocar memória para as colunas da matriz.\n");
+                    exit(1);
+                }
+            }
+            printf("Total de canais: %d\n", totalChannels);
+
+            // Reinicia o token para processar a primeira linha novamente
+            token = strtok(line, " ");
+            channelIndex = 0;
+        }
+
+        // Processa a linha atual
+        while (token != NULL) {
+            if (channelIndex < totalChannels) {
+                data[currentFrame][channelIndex] = atof(token);
+                channelIndex++;
+            }
             token = strtok(NULL, " ");
         }
 
-        // Atualiza o número total de canais baseado na primeira linha lida
-        if (currentFrame == 0) {
-            totalChannels = channelIndex;
-            printf("Total de canais: %d\n", totalChannels);
-
-            // Verifica limite de canais
-            if (totalChannels > MAX_CHANNELS) {
-                printf("Erro: Número de canais excede o limite máximo de %d.\n", MAX_CHANNELS);
-                exit(1);
-            }
+        if (channelIndex != totalChannels) {
+            printf("Aviso: Dados incompletos no frame %d. Esperados: %d, Lidos: %d\n", currentFrame, totalChannels, channelIndex);
         }
 
         currentFrame++;
     }
 
+    if (currentFrame != totalFrames) {
+        printf("Aviso: Número de frames lidos (%d) não corresponde ao total esperado (%d).\n", currentFrame, totalFrames);
+    }
+
     printf("Dados de movimento carregados com sucesso.\n");
-    printf("Frames lidos: %d, Canais: %d\n", totalFrames, totalChannels);
+}
+
+void freeMotionData() {
+    if (data) {
+        for (int i = 0; i < totalFrames; i++) {
+            free(data[i]);
+        }
+        free(data);
+        data = NULL;
+    }
 }
 
 void printHierarchy(Node *node, int depth) {
